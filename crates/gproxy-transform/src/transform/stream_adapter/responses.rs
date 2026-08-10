@@ -5,7 +5,7 @@
 mod text;
 mod tool;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::protocol::openai::{
     Extra, KnownResponseStreamEvent as KnownEvent, ResponseItem, ResponseMessageItem,
@@ -105,7 +105,8 @@ pub(super) struct ResponsesStreamState {
     reasoning: ResponsesTextItemState,
     tools: BTreeMap<u32, ResponsesToolItemState>,
     done_items: BTreeMap<u32, ResponseOutputItem>,
-    completed: bool,
+    emitted_done_indexes: BTreeSet<u32>,
+    terminal_seen: bool,
 }
 
 impl ResponsesStreamState {
@@ -212,7 +213,13 @@ impl ResponsesStreamState {
                 out.extend(self.finish_message());
                 out.extend(self.finish_tools());
                 self.patch_completed_output(response);
-                self.completed = true;
+                self.terminal_seen = true;
+                out
+            }
+            KnownEvent::ResponseFailed { response, .. }
+            | KnownEvent::ResponseIncomplete { response, .. } => {
+                let out = self.finish_terminal_reasoning(response);
+                self.terminal_seen = true;
                 out
             }
             KnownEvent::ResponseOutputItemAdded {
@@ -225,6 +232,7 @@ impl ResponsesStreamState {
                 item, output_index, ..
             } => {
                 self.note_item_done(item, *output_index);
+                self.emitted_done_indexes.insert(*output_index);
                 self.done_items.insert(*output_index, (**item).clone());
                 Vec::new()
             }
@@ -243,7 +251,7 @@ impl ResponsesStreamState {
     }
 
     pub(super) fn finish(&mut self) -> Vec<ResponseStreamEvent> {
-        if self.completed {
+        if self.terminal_seen {
             return Vec::new();
         }
         let mut out = self.finish_reasoning();
@@ -255,7 +263,7 @@ impl ResponsesStreamState {
                 sequence_number: None,
                 extra: Extra::new(),
             }));
-            self.completed = true;
+            self.terminal_seen = true;
         }
         out
     }
@@ -265,7 +273,52 @@ impl ResponsesStreamState {
     }
 
     fn finish_reasoning(&mut self) -> Vec<ResponseStreamEvent> {
-        self.reasoning.finish(text::reasoning_done_events)
+        let out = self.reasoning.finish(text::reasoning_done_events);
+        for event in &out {
+            if let ResponseStreamEvent::Known(KnownEvent::ResponseOutputItemDone {
+                output_index,
+                ..
+            }) = event
+            {
+                self.emitted_done_indexes.insert(*output_index);
+            }
+        }
+        out
+    }
+
+    /// Surface authoritative reasoning items carried only by a failed or
+    /// incomplete terminal response. Clients commonly turn those terminal
+    /// events into errors without inspecting `response.output`, while they do
+    /// retain `response.output_item.done` for stateless replay.
+    ///
+    /// Do not materialize messages or tool calls from an unsuccessful
+    /// response: treating those as completed could display or execute partial
+    /// output. Reasoning items are replay state and are copied without field
+    /// rewriting.
+    fn finish_terminal_reasoning(&mut self, response: &ResponseObject) -> Vec<ResponseStreamEvent> {
+        let mut out = Vec::new();
+        for (index, item) in response.output.iter().enumerate() {
+            let output_index = u32::try_from(index).unwrap_or(u32::MAX);
+            if self.emitted_done_indexes.contains(&output_index)
+                || !matches!(
+                    &item.0,
+                    ResponseItem::Typed(TypedResponseItem::Reasoning { .. })
+                )
+            {
+                continue;
+            }
+
+            self.note_item_done(item, output_index);
+            self.emitted_done_indexes.insert(output_index);
+            self.done_items.insert(output_index, item.clone());
+            out.push(known(KnownEvent::ResponseOutputItemDone {
+                item: Box::new(item.clone()),
+                output_index,
+                sequence_number: None,
+                extra: Extra::new(),
+            }));
+        }
+        out
     }
 
     fn note_item_added(&mut self, item: &ResponseOutputItem, output_index: u32) {

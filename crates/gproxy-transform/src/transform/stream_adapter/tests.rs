@@ -373,6 +373,161 @@ fn responses_normalizer_finish_flushes_tool_only_stream() {
     assert!(text.contains("response.completed"));
 }
 
+#[test]
+fn responses_normalizer_preserves_failed_response_reasoning() {
+    let mut normalizer = ResponsesStreamNormalizer::new();
+    let input = concat!(
+        "event: response.output_item.added\n",
+        "data: {\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"type\":\"reasoning\",\"id\":\"rs_1\",\"summary\":[],\"content\":[],\"encrypted_content\":\"PARTIAL_CIPHER\"},\"sequence_number\":2}\n\n",
+        "event: error\n",
+        "data: {\"type\":\"error\",\"error\":{\"type\":\"invalid_request\",\"code\":\"cyber_policy\",\"message\":\"failed\",\"param\":null},\"sequence_number\":3}\n\n",
+        "event: response.failed\n",
+        "data: {\"type\":\"response.failed\",\"response\":{\"id\":\"resp_1\",\"created_at\":0,\"object\":\"response\",\"output\":[{\"type\":\"reasoning\",\"id\":\"rs_1\",\"summary\":[],\"content\":[],\"encrypted_content\":\"FINAL_CIPHER\",\"future_field\":{\"token\":\"kept\"}}],\"status\":\"failed\",\"error\":{\"code\":\"server_error\",\"message\":\"failed\"}},\"sequence_number\":4}\n\n"
+    );
+    let mut out = normalizer.push(input.as_bytes()).unwrap();
+    out.extend(normalizer.finish().unwrap());
+    let text = String::from_utf8(out).unwrap();
+    let events = sse_values(&text);
+    let event_types: Vec<_> = events
+        .iter()
+        .filter_map(|event| event["type"].as_str())
+        .collect();
+    assert_eq!(
+        event_types,
+        [
+            "response.output_item.added",
+            "error",
+            "response.output_item.done",
+            "response.failed"
+        ]
+    );
+    assert_eq!(events[0]["item"]["encrypted_content"], "PARTIAL_CIPHER");
+
+    let done = events
+        .iter()
+        .find(|event| event["type"] == "response.output_item.done")
+        .expect("authoritative reasoning item done");
+    assert_eq!(done["item"]["encrypted_content"], "FINAL_CIPHER");
+    assert_eq!(done["item"]["content"], json!([]));
+    assert_eq!(done["item"]["future_field"]["token"], "kept");
+    assert!(done["item"].get("status").is_none());
+
+    let failed = events
+        .iter()
+        .find(|event| event["type"] == "response.failed")
+        .expect("failed response");
+    assert_eq!(
+        failed["response"]["output"][0]["encrypted_content"],
+        "FINAL_CIPHER"
+    );
+    assert_eq!(failed["response"]["output"][0]["content"], json!([]));
+    assert_eq!(done["item"], failed["response"]["output"][0]);
+    assert_eq!(failed["sequence_number"], 4);
+    assert!(!text.contains("response.reasoning_text.done"), "{text}");
+    assert!(!text.contains("response.completed"), "{text}");
+}
+
+#[test]
+fn responses_normalizer_does_not_duplicate_failed_reasoning_done() {
+    let mut normalizer = ResponsesStreamNormalizer::new();
+    let input = concat!(
+        "event: response.output_item.done\n",
+        "data: {\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{\"type\":\"reasoning\",\"id\":\"rs_1\",\"summary\":[],\"content\":[],\"encrypted_content\":\"FINAL_CIPHER\"}}\n\n",
+        "event: response.failed\n",
+        "data: {\"type\":\"response.failed\",\"response\":{\"id\":\"resp_1\",\"created_at\":0,\"object\":\"response\",\"output\":[{\"type\":\"reasoning\",\"id\":\"rs_1\",\"summary\":[],\"content\":[],\"encrypted_content\":\"FINAL_CIPHER\"}],\"status\":\"failed\",\"error\":{\"code\":\"server_error\",\"message\":\"failed\"}}}\n\n"
+    );
+    let mut out = normalizer.push(input.as_bytes()).unwrap();
+    out.extend(normalizer.finish().unwrap());
+    let text = String::from_utf8(out).unwrap();
+    let events = sse_values(&text);
+
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| event["type"] == "response.output_item.done")
+            .count(),
+        1
+    );
+    assert_eq!(events.last().unwrap()["type"], "response.failed");
+    assert!(!text.contains("response.completed"), "{text}");
+}
+
+#[test]
+fn responses_normalizer_does_not_duplicate_locally_finished_reasoning() {
+    let mut normalizer = ResponsesStreamNormalizer::new();
+    let input = concat!(
+        "event: response.reasoning_text.delta\n",
+        "data: {\"type\":\"response.reasoning_text.delta\",\"content_index\":0,\"delta\":\"thinking\",\"item_id\":\"rs_1\",\"output_index\":0}\n\n",
+        "event: response.output_text.delta\n",
+        "data: {\"type\":\"response.output_text.delta\",\"content_index\":0,\"delta\":\"answer\",\"item_id\":\"msg_1\",\"output_index\":1}\n\n",
+        "event: response.failed\n",
+        "data: {\"type\":\"response.failed\",\"response\":{\"id\":\"resp_1\",\"created_at\":0,\"object\":\"response\",\"output\":[{\"type\":\"reasoning\",\"id\":\"rs_1\",\"summary\":[],\"content\":[],\"encrypted_content\":\"FINAL_CIPHER\"}],\"status\":\"failed\",\"error\":{\"code\":\"server_error\",\"message\":\"failed\"}}}\n\n"
+    );
+    let mut out = normalizer.push(input.as_bytes()).unwrap();
+    out.extend(normalizer.finish().unwrap());
+    let text = String::from_utf8(out).unwrap();
+    let events = sse_values(&text);
+
+    let reasoning_done = events
+        .iter()
+        .find(|event| {
+            event["type"] == "response.output_item.done" && event["item"]["type"] == "reasoning"
+        })
+        .expect("locally finished reasoning item");
+    assert_eq!(reasoning_done["item"]["content"][0]["text"], "thinking");
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| {
+                event["type"] == "response.output_item.done" && event["item"]["type"] == "reasoning"
+            })
+            .count(),
+        1
+    );
+    assert_eq!(events.last().unwrap()["type"], "response.failed");
+    assert!(!text.contains("response.completed"), "{text}");
+}
+
+#[test]
+fn responses_normalizer_does_not_complete_incomplete_response() {
+    let mut normalizer = ResponsesStreamNormalizer::new();
+    let input = concat!(
+        "event: response.output_item.added\n",
+        "data: {\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"type\":\"reasoning\",\"id\":\"rs_1\",\"summary\":[]}}\n\n",
+        "event: response.incomplete\n",
+        "data: {\"type\":\"response.incomplete\",\"response\":{\"id\":\"resp_1\",\"created_at\":0,\"object\":\"response\",\"output\":[],\"status\":\"incomplete\"}}\n\n"
+    );
+    let mut out = normalizer.push(input.as_bytes()).unwrap();
+    out.extend(normalizer.finish().unwrap());
+    let text = String::from_utf8(out).unwrap();
+
+    assert!(!text.contains("response.reasoning_text.done"), "{text}");
+    assert!(!text.contains("response.output_item.done"), "{text}");
+    assert!(!text.contains("response.completed"), "{text}");
+}
+
+#[test]
+fn responses_normalizer_preserves_nonempty_reasoning_text() {
+    let mut normalizer = ResponsesStreamNormalizer::new();
+    let input = concat!(
+        "event: response.reasoning_text.delta\n",
+        "data: {\"type\":\"response.reasoning_text.delta\",\"content_index\":0,\"delta\":\"thinking\",\"item_id\":\"rs_1\",\"output_index\":0}\n\n"
+    );
+    let mut out = normalizer.push(input.as_bytes()).unwrap();
+    out.extend(normalizer.finish().unwrap());
+    let text = String::from_utf8(out).unwrap();
+    let events = sse_values(&text);
+
+    let done = events
+        .iter()
+        .find(|event| event["type"] == "response.output_item.done")
+        .expect("reasoning item done");
+    assert_eq!(done["item"]["content"][0]["text"], "thinking");
+    assert_eq!(done["item"]["content"][0]["type"], "reasoning_text");
+    assert!(text.contains("response.reasoning_text.delta"));
+    assert!(text.contains("response.reasoning_text.done"));
+}
+
 /// Regression: an upstream that sends real `output_item.done` items but an
 /// empty `response.completed.output` must have that array filled with *those*
 /// items. Re-synthesising them drops `encrypted_content` and invents
