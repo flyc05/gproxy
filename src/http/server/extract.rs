@@ -1,6 +1,5 @@
 //! Inbound request → [`RequestCtx`] extraction (request-id, routing mode, path
-//! normalization). Body reading + the body-size limit live in the gateway
-//! (the shared cap is [`crate::config::MAX_BODY_BYTES`]).
+//! normalization). Body reading lives in the gateway.
 
 use bytes::Bytes;
 use http::request::Parts;

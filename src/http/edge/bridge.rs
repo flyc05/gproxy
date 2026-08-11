@@ -38,11 +38,6 @@ pub(super) fn unauthorized() -> Result<Response, JsValue> {
     text_response(401, "text/plain", b"unauthorized")
 }
 
-/// Build the 413 for an over-cap request body.
-pub(super) fn payload_too_large(request_id: &str) -> Result<Response, JsValue> {
-    text_response_with_request_id(413, "text/plain", b"request body too large", request_id)
-}
-
 /// Build a response with a single `Content-Type` header and a body.
 pub(super) fn text_response(
     status: u16,

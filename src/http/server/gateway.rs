@@ -11,7 +11,6 @@ use futures_util::StreamExt as _;
 use http::request::Parts;
 
 use crate::app::AppState;
-use crate::config::MAX_BODY_BYTES;
 use crate::http::responses_ws::{ResponsesWsRequestBase, WsFrameError};
 use crate::http::server::extract::build_ctx_with_request_id;
 use crate::http::telemetry;
@@ -76,13 +75,13 @@ async fn handle(
     }
 
     let (parts, body) = req.into_parts();
-    let bytes = match axum::body::to_bytes(body, MAX_BODY_BYTES).await {
-        Ok(b) => b,
+    let bytes = match axum::body::to_bytes(body, usize::MAX).await {
+        Ok(bytes) => bytes,
         Err(_) => {
             return early_response(
-                (StatusCode::PAYLOAD_TOO_LARGE, "request body too large").into_response(),
+                (StatusCode::BAD_REQUEST, "failed to read request body").into_response(),
                 &trace,
-                Some("request body too large"),
+                Some("failed to read request body"),
             );
         }
     };
@@ -136,7 +135,9 @@ async fn handle_websocket(
             }
         };
         return early_response(
-            ws.on_upgrade(move |socket| crate::http::realtime_ws::relay(socket, session)),
+            ws.max_message_size(usize::MAX)
+                .max_frame_size(usize::MAX)
+                .on_upgrade(move |socket| crate::http::realtime_ws::relay(socket, session)),
             &trace,
             None,
         );
@@ -153,7 +154,9 @@ async fn handle_websocket(
     let (parts, _body) = req.into_parts();
     let base = ResponsesWsRequestBase::from_parts(&parts);
     early_response(
-        ws.on_upgrade(move |socket| serve_websocket(socket, state, base, scoped)),
+        ws.max_message_size(usize::MAX)
+            .max_frame_size(usize::MAX)
+            .on_upgrade(move |socket| serve_websocket(socket, state, base, scoped)),
         &trace,
         None,
     )

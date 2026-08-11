@@ -46,33 +46,7 @@ pub async fn fetch(req: web_sys::Request) -> Result<Response, JsValue> {
     // shared config-version stamp (throttled) and rebuild when it moved.
     init::refresh_snapshot_if_stale(state).await;
 
-    // Body cap (shared with native's DefaultBodyLimit): reject via
-    // content-length before buffering when the header is present.
-    if content_length_exceeds(&req, crate::config::MAX_BODY_BYTES) {
-        complete_early(
-            &request_id,
-            &inbound_method,
-            &inbound_path,
-            ::http::StatusCode::PAYLOAD_TOO_LARGE,
-            started_ms,
-            "request body too large",
-        );
-        return bridge::payload_too_large(&request_id);
-    }
     let (parts, body) = ws_request_to_parts(req).await?;
-    // Re-check actual buffered length because content-length can be absent or
-    // incorrect. Both paths produce a clean 413 rather than a JS exception.
-    if body.len() > crate::config::MAX_BODY_BYTES {
-        complete_early(
-            &request_id,
-            &inbound_method,
-            &inbound_path,
-            ::http::StatusCode::PAYLOAD_TOO_LARGE,
-            started_ms,
-            "request body too large",
-        );
-        return bridge::payload_too_large(&request_id);
-    }
     let path = parts.uri.path().to_string();
 
     if crate::channel::realtime_websocket::is_ingress_path(&path) {
@@ -228,14 +202,6 @@ async fn admin_ok(state: &AppState, headers: &HeaderMap) -> bool {
     crate::admin::authenticate_admin(state, headers)
         .await
         .is_some()
-}
-
-/// `true` when a present, parseable `content-length` already exceeds `max`.
-fn content_length_exceeds(req: &web_sys::Request, max: usize) -> bool {
-    matches!(
-        req.headers().get("content-length"),
-        Ok(Some(v)) if v.trim().parse::<u64>().is_ok_and(|n| n > max as u64)
-    )
 }
 
 /// Convert `web_sys::Request` to HTTP request parts and a buffered body.

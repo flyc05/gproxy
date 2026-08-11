@@ -139,6 +139,6 @@ curl "http://127.0.0.1:8787/provider-name/v1beta/models/gemini-1.5-flash:generat
 | `404` 或 unknown route | 聚合模式无法解析请求的 route 或 alias。 |
 | `429` | rate limit 超限。 |
 | `402` | quota precheck 失败。 |
-| `413` | 请求体超过 native/edge 共用大小限制。 |
 
 每个 gateway 响应都会带 `x-gproxy-request-id`，便于和日志关联。
+gproxy 不限制请求体大小；部署平台和上游 provider 仍可能施加各自的限制。

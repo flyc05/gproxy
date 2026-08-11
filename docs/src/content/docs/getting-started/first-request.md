@@ -148,6 +148,6 @@ curl "http://127.0.0.1:8787/provider-name/v1beta/models/gemini-1.5-flash:generat
 | `404` or unknown route | Aggregated mode could not resolve the requested route or alias. |
 | `429` | Rate limit exceeded. |
 | `402` | Quota precheck failed. |
-| `413` | Request body exceeded the shared native/edge body limit. |
 
 Every gateway response includes `x-gproxy-request-id` for correlation with logs.
+gproxy does not impose a request-body size limit; deployment platforms and upstream providers may still enforce their own limits.

@@ -64,12 +64,6 @@ pub(crate) async fn execute_frame(
     scoped: bool,
     frame: &str,
 ) -> Result<ExecOutcome, WsFrameError> {
-    if frame.len() > crate::config::MAX_BODY_BYTES {
-        return Err(WsFrameError::plain(
-            StatusCode::PAYLOAD_TOO_LARGE,
-            "request body too large",
-        ));
-    }
     validate_response_create_frame(frame.as_bytes()).map_err(WsFrameError::from_transform)?;
     let body = Bytes::copy_from_slice(frame.as_bytes());
 

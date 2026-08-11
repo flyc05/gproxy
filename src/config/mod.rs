@@ -189,11 +189,6 @@ pub const DEFAULT_MAX_ATTEMPTS: u32 = 6;
 /// Default max concurrent in-flight gateway requests (`GPROXY_MAX_IN_FLIGHT`).
 pub const DEFAULT_MAX_IN_FLIGHT: usize = 1024;
 
-/// Max accepted request-body size, enforced on BOTH surfaces: native via the
-/// gateway `DefaultBodyLimit` layer, edge via an explicit check in
-/// `http::edge` (content-length pre-check + post-read length check) → 413.
-pub const MAX_BODY_BYTES: usize = 50 * 1024 * 1024;
-
 /// Upstream transport bounds (§16.2 slow-upstream guard — without them a dead
 /// or deliberately slow upstream holds a gateway concurrency slot forever).
 /// TCP/TLS connect cap.
